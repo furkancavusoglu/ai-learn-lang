@@ -10,11 +10,12 @@ import {
   setSubtitles,
 } from "@/store/videoStore";
 import { mockSubtitles } from "@/data/mockData";
+import styles from "@/css/VideoPlayer.module.scss";
 
 export default function VideoPlayer() {
   const videoUrl = useStore(videoStore, (state) => state.videoUrl);
   const [isMounted, setIsMounted] = useState(false);
-
+  const deneme = "";
   useEffect(() => {
     setIsMounted(true);
     setSubtitles(mockSubtitles);
@@ -23,7 +24,7 @@ export default function VideoPlayer() {
   if (!isMounted) return null;
 
   return (
-    <div style={{ width: "100%", height: "100%" }}>
+    <div className={styles.videoWrapper}>
       <ReactPlayer
         src={videoUrl || "https://www.youtube.com/watch?v=FGP3rX6B-WE"}
         width="100%"
@@ -34,7 +35,7 @@ export default function VideoPlayer() {
         onProgress={(state: any) => setTime(state.playedSeconds)}
         onPlay={() => setIsPlaying(true)}
         onPause={() => setIsPlaying(false)}
-        style={{ position: "absolute", top: 0, left: 0 }}
+        className={styles.reactPlayer}
       />
     </div>
   );
