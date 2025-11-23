@@ -12,9 +12,11 @@
     "@tanstack/react-store": "^0.8.0",
     "@tanstack/store": "^0.8.0",
     "clsx": "^2.1.1",
+    "lucide-react": "^0.554.0",
     "next": "16.0.3",
     "react": "19.2.0",
     "react-dom": "19.2.0",
+    "react-player": "^3.4.0",
     "sass": "^1.94.2"
   },
   "devDependencies": {

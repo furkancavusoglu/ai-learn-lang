@@ -1,0 +1,50 @@
+.container {
+  display: flex;
+  height: 100vh;
+  flex-direction: column;
+  background: var(--background);
+
+  @media (min-width: 1024px) {
+    flex-direction: row;
+  }
+}
+
+.videoSection {
+  flex: 1;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  width: 100%;
+  /* Maintain aspect ratio on mobile or fill height on desktop */
+  aspect-ratio: 16/9;
+  
+  @media (min-width: 1024px) {
+    height: 100vh;
+    aspect-ratio: auto;
+  }
+}
+
+.subtitleSection {
+  flex: 1;
+  background: var(--background);
+  border-left: 1px solid var(--border);
+  height: auto; /* Allow to grow/shrink */
+  min-height: 0; /* Fix for flex child scrolling */
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+
+  @media (min-width: 1024px) {
+    height: 100vh;
+    width: 400px;
+    max-width: 35%;
+    flex: none;
+  }
+}
+
+.videoSkeleton {
+  color: #888;
+  font-size: 1.2rem;
+}

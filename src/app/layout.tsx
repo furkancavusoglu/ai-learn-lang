@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import "./global.scss";
+import "@/css/global.scss";
 
 export const metadata: Metadata = {
   title: "AI Learn Lang",
