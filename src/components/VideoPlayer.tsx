@@ -15,10 +15,13 @@ import styles from "@/css/VideoPlayer.module.scss";
 export default function VideoPlayer() {
   const videoUrl = useStore(videoStore, (state) => state.videoUrl);
   const [isMounted, setIsMounted] = useState(false);
-  const deneme = "";
+
   useEffect(() => {
-    setIsMounted(true);
-    setSubtitles(mockSubtitles);
+    const timer = setTimeout(() => {
+      setIsMounted(true);
+      setSubtitles(mockSubtitles);
+    }, 0);
+    return () => clearTimeout(timer);
   }, []);
 
   if (!isMounted) return null;
