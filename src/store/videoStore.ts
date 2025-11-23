@@ -6,6 +6,7 @@ export type SubtitleSegment = {
   end: number;
   text: string;
   translation?: string;
+  romaji?: string;
 };
 
 export type VideoState = {

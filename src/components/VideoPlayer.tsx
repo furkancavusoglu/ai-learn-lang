@@ -7,9 +7,9 @@ import {
   videoStore,
   setTime,
   setIsPlaying,
-  setSubtitles,
+  // setSubtitles,
 } from "@/store/videoStore";
-import { mockSubtitles } from "@/data/mockData";
+// import { mockSubtitles } from "@/data/mockData";
 import styles from "@/css/VideoPlayer.module.scss";
 
 export default function VideoPlayer() {
@@ -19,7 +19,8 @@ export default function VideoPlayer() {
   useEffect(() => {
     const timer = setTimeout(() => {
       setIsMounted(true);
-      setSubtitles(mockSubtitles);
+      // Remove mock data injection
+      // setSubtitles(mockSubtitles);
     }, 0);
     return () => clearTimeout(timer);
   }, []);
@@ -33,7 +34,7 @@ export default function VideoPlayer() {
         width="100%"
         height="100%"
         controls={true}
-        playing={true}
+        playing={false}
         muted={true}
         onProgress={(state: any) => setTime(state.playedSeconds)}
         onPlay={() => setIsPlaying(true)}

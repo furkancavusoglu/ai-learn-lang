@@ -25,21 +25,19 @@ export function SubtitleList() {
     <div className={styles.list}>
       {subtitles.map((sub) => {
         const isActive = currentTime >= sub.start && currentTime <= sub.end;
-        
+
         return (
           <div
             key={sub.id}
             ref={isActive ? activeRef : null}
             className={clsx(styles.item, isActive && styles.active)}
           >
-            <p className={styles.japanese}>{sub.text}</p>
-            {sub.translation && (
-              <p className={styles.english}>{sub.translation}</p>
-            )}
+            <p className={styles.japanese}>{sub.translation || "..."}</p>
+            {sub.romaji && <p className={styles.romaji}>{sub.romaji}</p>}
+            <p className={styles.english}>{sub.text}</p>
           </div>
         );
       })}
     </div>
   );
 }
-
