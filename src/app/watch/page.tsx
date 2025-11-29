@@ -3,56 +3,85 @@
 import VideoPlayer from "@/components/VideoPlayer";
 import { SubtitleList } from "@/components/SubtitleList";
 import styles from "@/css/watch.module.scss";
-import { useState } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useStore } from "@tanstack/react-store";
 import {
   videoStore,
-  setSubtitles,
+  addSubtitles,
   type SubtitleSegment,
 } from "@/store/videoStore";
 
+const CHUNK_SIZE = 60; // seconds
+
 export default function WatchPage() {
   const videoUrl = useStore(videoStore, (state) => state.videoUrl);
+  const currentTime = useStore(videoStore, (state) => state.currentTime);
+
   const [isProcessing, setIsProcessing] = useState(false);
+  const processedChunks = useRef<Set<number>>(new Set());
 
-  const handleGenerateSubtitles = async () => {
+  const fetchChunk = useCallback(
+    async (start: number) => {
+      if (processedChunks.current.has(start)) return;
+
+      processedChunks.current.add(start); // Optimistic lock
+      setIsProcessing(true);
+
+      try {
+        console.log(`Fetching chunk: ${start}s`);
+        const res = await fetch("/api/process", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            url: videoUrl,
+            startTime: start,
+            duration: CHUNK_SIZE,
+          }),
+        });
+
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error);
+
+        const newSubtitles: SubtitleSegment[] = data.segments.map(
+          (s: any, i: number) => ({
+            id: `${start}-${i}`,
+            // Distribute roughly over the chunk for now
+            start: start + i * (CHUNK_SIZE / data.segments.length),
+            end: start + (i + 1) * (CHUNK_SIZE / data.segments.length),
+            text: s.english,
+            translation: s.kanji,
+            romaji: s.romaji,
+          })
+        );
+
+        addSubtitles(newSubtitles);
+      } catch (e) {
+        console.error(e);
+        processedChunks.current.delete(start); // Allow retry
+      } finally {
+        setIsProcessing(false);
+      }
+    },
+    [videoUrl]
+  );
+
+  // Auto-fetch based on time
+  useEffect(() => {
     if (!videoUrl) return;
-    setIsProcessing(true);
-    try {
-      const response = await fetch("/api/process", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: videoUrl }),
-      });
-      const data = await response.json();
-      console.log("Backend Response:", data);
+    const time =
+      typeof currentTime === "number" && !isNaN(currentTime) ? currentTime : 0;
 
-      if (!response.ok) throw new Error(data.error || "Failed to generate");
+    const currentChunk = Math.floor(time / CHUNK_SIZE) * CHUNK_SIZE;
+    const nextChunk = currentChunk + CHUNK_SIZE;
 
-      // Update the store with the new subtitles (handling multiple segments)
-      const newSubtitles: SubtitleSegment[] = data.segments.map(
-        (seg: any, index: number) => ({
-          id: `${Date.now()}-${index}`,
-          start: index * 5, // Mock timing: each segment is 5 seconds
-          end: (index + 1) * 5,
-          text: seg.english,
-          translation: seg.kanji,
-          romaji: seg.romaji,
-        })
-      );
+    // Fetch current if needed
+    fetchChunk(currentChunk);
 
-      setSubtitles(newSubtitles);
-    } catch (err) {
-      console.error(err);
-      alert(
-        `Error: ${
-          err instanceof Error ? err.message : "Failed to connect to backend"
-        }`
-      );
-    } finally {
-      setIsProcessing(false);
+    // Pre-fetch next if we are halfway through
+    if (time % CHUNK_SIZE > 30) {
+      fetchChunk(nextChunk);
     }
-  };
+  }, [currentTime, videoUrl, fetchChunk]);
 
   return (
     <main className={styles.container}>
@@ -61,13 +90,9 @@ export default function WatchPage() {
       </div>
       <div className={styles.subtitleSection}>
         <div className={styles.controls}>
-          <button
-            onClick={handleGenerateSubtitles}
-            disabled={isProcessing}
-            className={styles.generateButton}
-          >
-            {isProcessing ? "Generating..." : "Generate Subtitles"}
-          </button>
+          <div className={styles.status}>
+            {isProcessing ? "Processing..." : "Ready"}
+          </div>
         </div>
         <SubtitleList />
       </div>

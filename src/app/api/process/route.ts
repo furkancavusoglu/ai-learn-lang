@@ -5,236 +5,256 @@ import fs from "fs/promises";
 import { pipeline, env } from "@xenova/transformers";
 import { WaveFile } from "wavefile";
 
-// Configure transformers.js settings
+// --- Configuration ---
 env.allowLocalModels = false;
 env.useBrowserCache = false;
 
-const execAsync = util.promisify(exec);
-const DEV_MODE = true; // Limit processing to 10 seconds for development speed
+// Silence ONNX logs
+process.env.ORT_LOG_LEVEL = "4";
+process.env.ORT_LOGGING_LEVEL = "4";
 
-// Singleton pattern to keep the model in memory across requests
+const execAsync = util.promisify(exec);
+
+// --- Singleton Model ---
 let globalTranscriber: any = null;
 
 async function getTranscriber() {
   if (!globalTranscriber) {
-    process.env.XENOVAS_CACHE_DIR = "/tmp/xenova_cache";
-    // Attempt to silence ONNX Runtime logs via environment variables
-    process.env.ORT_LOG_LEVEL = "4";
-    process.env.ORT_LOGGING_LEVEL = "4";
-
+    console.log("❄️  Loading Whisper Model (small)...");
     globalTranscriber = await pipeline(
       "automatic-speech-recognition",
-      "Xenova/whisper-tiny",
+      "Xenova/whisper-small", // Upgraded to small for stability
       {
-        // @ts-expect-error - session_options is not typed in all versions of transformers.js
+        // @ts-expect-error - session_options is not typed in all versions
         session_options: { logSeverityLevel: 4, logVerbosityLevel: 4 },
       }
     );
+    console.log("✅ Model loaded!");
   }
   return globalTranscriber;
 }
 
-async function transcribeAudio(
-  filePath: string,
-  signal?: AbortSignal
-): Promise<string[]> {
-  try {
-    if (signal?.aborted) throw new Error("Aborted by user");
+// --- Helpers ---
 
-    const transcriber = await getTranscriber();
-
-    const buffer = await fs.readFile(filePath);
-    const wav = new WaveFile(buffer);
-
-    wav.toBitDepth("32f");
-    wav.toSampleRate(16000);
-
-    let audioData: any = wav.getSamples();
-
-    // Handle stereo to mono conversion if necessary
-    if (Array.isArray(audioData)) {
-      if (audioData.length > 1) {
-        const left = audioData[0];
-        const right = audioData[1];
-        for (let i = 0; i < left.length; i++) {
-          left[i] = (left[i] + right[i]) / 2;
-        }
-        audioData = left;
-      } else {
-        audioData = audioData[0];
-      }
-    }
-
-    if (!(audioData instanceof Float32Array)) {
-      audioData = new Float32Array(audioData);
-    }
-
-    const output = await transcriber(audioData, {
-      chunk_length_s: 30,
-      stride_length_s: 5,
-      return_timestamps: true,
-    });
-
-    const chunks = output.chunks || [];
-
-    return chunks
-      .map((c: any) => c.text.trim())
-      .filter((t: string) => t.length > 0);
-  } catch (error: any) {
-    console.error("Transcription error:", error.message);
-    throw new Error(`Transcription failed: ${error.message}`);
-  }
-}
-
-async function downloadAudio(url: string, signal?: AbortSignal) {
+async function downloadAudioChunk(
+  url: string,
+  start: number,
+  duration: number
+) {
   try {
     const ytDlpPath = "/opt/homebrew/bin/yt-dlp";
     const videoIdMatch = url.match(/(?:v=|\/)([a-zA-Z0-9_-]{11})/);
     const videoId = videoIdMatch ? videoIdMatch[1] : "unknown";
 
-    // Use a different filename for DEV_MODE to ensure fresh downloads with truncation
-    const filename = DEV_MODE ? `${videoId}_short` : videoId;
+    // Unique filename for this chunk
+    const filename = `${videoId}_${start}_${duration}`;
+    const outputPath = `/tmp/${filename}.wav`;
+    const end = start + duration;
 
-    // Add --download-sections if in DEV_MODE to truncate at the download/conversion level
-    const sectionsArg = DEV_MODE ? '--download-sections "*0-10"' : "";
+    // Check cache (with size check to avoid empty files)
+    try {
+      await fs.access(outputPath);
+      const stats = await fs.stat(outputPath);
+      if (stats.size > 1000) {
+        // > 1KB to ensure it's real audio
+        console.log(`✅ Using cached chunk: ${start}s - ${end}s`);
+        return outputPath;
+      }
+    } catch {
+      // Not cached or invalid, proceed to download
+    }
 
-    const command = `${ytDlpPath} -x --audio-format wav ${sectionsArg} --restrict-filenames --force-overwrites -o "/tmp/${filename}.%(ext)s" "${url}"`;
+    console.log(`⬇️ Downloading chunk: ${start}s - ${end}s`);
+
+    // yt-dlp command to download specific section
+    const command = `${ytDlpPath} -x --audio-format wav --download-sections "*${start}-${end}" --restrict-filenames --force-overwrites -o "/tmp/${filename}.%(ext)s" "${url}"`;
 
     const { stderr } = await execAsync(command, {
       env: { ...process.env, PATH: `${process.env.PATH}:/opt/homebrew/bin` },
-      signal,
     });
 
-    // Only log critical errors from yt-dlp
     if (stderr && (stderr.includes("ERROR") || stderr.includes("Error"))) {
-      console.error("yt-dlp error:", stderr);
+      console.error("yt-dlp warning/error:", stderr);
     }
 
-    return `/tmp/${filename}.wav`;
+    return outputPath;
   } catch (error: any) {
     throw new Error(`Download failed: ${error.message}`);
   }
 }
 
+async function transcribe(filePath: string): Promise<string[]> {
+  const transcriber = await getTranscriber();
+  const buffer = await fs.readFile(filePath);
+  const wav = new WaveFile(buffer);
+
+  wav.toBitDepth("32f");
+  wav.toSampleRate(16000);
+
+  let audioData: any = wav.getSamples();
+  if (Array.isArray(audioData)) {
+    audioData = audioData[0]; // Take first channel if stereo
+  }
+  if (audioData.length > 1 && Array.isArray(audioData[0])) {
+    // Handle case where getSamples returns [channel1, channel2]
+    audioData = audioData[0];
+  }
+
+  if (!(audioData instanceof Float32Array)) {
+    audioData = new Float32Array(audioData);
+  }
+
+  const output = await transcriber(audioData, {
+    chunk_length_s: 30,
+    stride_length_s: 5,
+    return_timestamps: true,
+    task: "transcribe",
+    language: "ja", // Explicitly set Japanese
+    condition_on_previous_text: false, // Prevent loops
+    temperature: 0.2, // Low temp for accuracy (but not 0 to allow some escape)
+    repetition_penalty: 1.2, // Penalize repetition
+    no_speech_threshold: 0.4, // Relaxed threshold
+  });
+
+  const rawChunks = output.chunks || [];
+  console.log(`   -> Whisper returned ${rawChunks.length} raw chunks.`);
+
+  // Sentence Merging Logic
+  const sentences: string[] = [];
+  let bufferText = "";
+
+  for (const chunk of rawChunks) {
+    const text = chunk.text.trim();
+
+    // Filter garbage loops
+    if (/(.)\1{4,}/.test(text)) {
+      console.log(
+        `   -> Filtered repetitive segment: "${text.substring(0, 20)}..."`
+      );
+      continue;
+    }
+    if (text.length < 2 || text === "." || text.includes("Subtitle by"))
+      continue;
+
+    if (bufferText) bufferText += " " + text;
+    else bufferText = text;
+
+    const lastChar = bufferText.slice(-1);
+    const isGreeting =
+      /こんにちは|こんばんは|おはようございます|初めまして/.test(bufferText) &&
+      bufferText.length < 20;
+
+    if (
+      [".", "?", "!", "。", "？", "！"].includes(lastChar) ||
+      isGreeting || // Force split on greetings
+      bufferText.length > 80 // Force split at 80 chars to prevent overload
+    ) {
+      sentences.push(bufferText.trim());
+      bufferText = "";
+    }
+  }
+  if (bufferText) sentences.push(bufferText);
+
+  return sentences;
+}
+
+function unescapeUnicode(str: string) {
+  return str.replace(/\\u([a-fA-F0-9]{4})/g, (_, grp) =>
+    String.fromCharCode(parseInt(grp, 16))
+  );
+}
+
+async function translate(text: string) {
+  try {
+    const response = await fetch("http://127.0.0.1:11434/api/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "gemma2", // Switched to Gemma 2 (9B)
+        options: { num_predict: 150, temperature: 0 }, // Deterministic for strict formatting
+        prompt: `You are a professional translator.
+Task: Translate the Japanese text below into Turkish and provide the Romaji reading.
+Format: Japanese Text | Romaji Reading | Turkish Translation
+Constraint: Output ONLY the pipe-separated line. No extra text.
+
+Input: ${text}
+Output:`,
+        stream: false,
+      }),
+    });
+
+    if (!response.ok) return null;
+    const data = await response.json();
+    const rawText = data.response.trim();
+
+    // Parse the Pipe Format
+    const parts = rawText.split("|").map((s: string) => s.trim());
+
+    if (parts.length >= 3) {
+      return {
+        kanji: parts[0],
+        romaji: parts[1],
+        english: parts[2], // Storing Turkish in 'english' field
+      };
+    } else if (parts.length === 2) {
+      // Fallback if it misses one part
+      return {
+        kanji: text,
+        romaji: parts[0],
+        english: parts[1],
+      };
+    }
+
+    // Fallback
+    return { kanji: text, romaji: "", english: rawText };
+  } catch (e) {
+    console.error("Translation error:", e);
+    return null;
+  }
+}
+
+// --- Main Handler ---
+
 export async function POST(request: NextRequest) {
-  const { signal } = request;
   try {
     const body = await request.json();
-    const { url } = body;
+    const { url, startTime = 0, duration = 60 } = body;
 
-    if (!url) {
-      return NextResponse.json({ error: "URL is required" }, { status: 400 });
-    }
+    if (!url)
+      return NextResponse.json({ error: "URL required" }, { status: 400 });
 
-    // 1. Download Audio
-    const videoIdMatch = url.match(/(?:v=|\/)([a-zA-Z0-9_-]{11})/);
-    const videoId = videoIdMatch ? videoIdMatch[1] : "unknown";
-
-    const filename = DEV_MODE ? `${videoId}_short` : videoId;
-    const expectedPath = `/tmp/${filename}.wav`;
-
-    let audioPath = expectedPath;
-
-    if (signal.aborted) throw new Error("Aborted by user");
-
-    try {
-      await fs.access(expectedPath);
-      console.log("✅ Audio found in cache.");
-    } catch {
-      console.log("⬇️ Downloading audio...");
-      audioPath = await downloadAudio(url, signal);
-    }
-
-    if (signal.aborted) throw new Error("Aborted by user");
+    // 1. Download
+    const audioPath = await downloadAudioChunk(url, startTime, duration);
 
     // 2. Transcribe
-    let segments: string[] = [];
-    if (audioPath) {
-      console.log("🎙️ Transcribing...");
-      segments = await transcribeAudio(audioPath, signal);
-    } else {
-      throw new Error("Download failed.");
-    }
+    console.log("🎙️ Transcribing...");
+    const sentences = await transcribe(audioPath);
 
     // 3. Translate
-    console.log(
-      `🧠 Starting translation of ${segments.length} segments with Llama...`
-    );
-    const translatedSegments = [];
+    console.log(`🧠 Translating ${sentences.length} segments...`);
+    const results = [];
 
-    for (let i = 0; i < segments.length; i++) {
-      if (signal.aborted) throw new Error("Aborted by user");
-
-      const segment = segments[i];
-      console.log(
-        `   [${i + 1}/${segments.length}] Translating: "${segment.substring(
-          0,
-          30
-        )}..."`
-      );
-      let kanji = "";
-      let romaji = "";
-
-      try {
-        const response = await fetch("http://127.0.0.1:11434/api/generate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            model: "llama3.2",
-            options: { num_predict: 100 }, // FORCE STOP: Prevent infinite generation loops
-            prompt: `You are a Japanese language learning assistant.
-Input Text: "${segment}"
-
-Task: Analyze the input text and output a JSON object with three keys:
-1. "kanji": The text in Japanese (Kanji/Kana). If input is English, translate it. If input is Japanese, keep it.
-2. "romaji": The Romanized reading of the Japanese text.
-3. "english": The English meaning. If input is English, keep it. If input is Japanese, translate it.
-
-Output Format: JSON ONLY. No markdown.
-Example: { "kanji": "こんにちは", "romaji": "Konnichiwa", "english": "Hello" }`,
-            stream: false,
-            format: "json",
-          }),
+    for (const sentence of sentences) {
+      console.log(`📝 Input to Llama: "${sentence}"`);
+      const translation = await translate(sentence);
+      if (translation) {
+        results.push({
+          kanji: unescapeUnicode(translation.kanji || ""),
+          romaji: unescapeUnicode(translation.romaji || ""),
+          english: unescapeUnicode(translation.english || sentence),
         });
-
-        if (response.ok) {
-          const data = await response.json();
-          try {
-            const jsonResponse = JSON.parse(data.response);
-            kanji = jsonResponse.kanji || "";
-            romaji = jsonResponse.romaji || "";
-          } catch {
-            kanji = data.response;
-          }
-        }
-      } catch (translationError) {
-        console.error(`Translation failed for segment ${i}:`, translationError);
-        kanji = "Error";
+      } else {
+        // Fallback
+        results.push({ kanji: sentence, romaji: "", english: sentence });
       }
-
-      translatedSegments.push({
-        kanji:
-          typeof kanji === "string"
-            ? kanji.replace(/^"|"$/g, "").trim()
-            : kanji,
-        romaji:
-          typeof romaji === "string"
-            ? romaji.replace(/^"|"$/g, "").trim()
-            : romaji,
-        english: segment,
-      });
     }
 
     return NextResponse.json({
-      message: "Process completed",
-      segments: translatedSegments,
-      ollama_status: "Connected",
+      message: "Success",
+      segments: results,
     });
-  } catch (error) {
-    console.error("Process Error:", error);
-    return NextResponse.json(
-      { error: "Processing failed", details: String(error) },
-      { status: 500 }
-    );
+  } catch (error: any) {
+    console.error("API Error:", error);
+    return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }

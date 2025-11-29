@@ -43,6 +43,19 @@ export const setSubtitles = (subtitles: SubtitleSegment[]) => {
   });
 };
 
+export const addSubtitles = (newSubtitles: SubtitleSegment[]) => {
+  videoStore.setState((state) => {
+    // Merge and deduplicate by ID
+    const existingIds = new Set(state.subtitles.map((s) => s.id));
+    const uniqueNew = newSubtitles.filter((s) => !existingIds.has(s.id));
+    
+    // Sort by start time
+    const merged = [...state.subtitles, ...uniqueNew].sort((a, b) => a.start - b.start);
+    
+    return { ...state, subtitles: merged };
+  });
+};
+
 export const setIsPlaying = (isPlaying: boolean) => {
   videoStore.setState((state) => {
     return { ...state, isPlaying };
